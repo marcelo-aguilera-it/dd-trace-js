@@ -129,7 +129,11 @@ function getValueFromSource (name, source) {
   }
 }
 
-function getEnvNameFromSource (name, source) {
+/**
+ * @param {string} name
+ * @param {typeof process.env} [source]
+ */
+function getEnvNameFromSource (name, source = process.env) {
   if (source[name] !== undefined) {
     return name
   }
@@ -180,17 +184,14 @@ function loadConfigurationsTable () {
  * @param {string} name Canonical or alias environment variable name.
  * @param {string} value Raw value read from an environment source.
  * @param {'env_var'|'fleet_stable_config'|'local_stable_config'} source Source the value was read from.
- * @param {boolean} [reportInvalid] Whether invalid values should produce configuration diagnostics.
  * @returns {string | number | boolean | object | undefined}
  */
-function parseConfigurationValue (name, value, source, reportInvalid = true) {
+function parseConfigurationValue (name, value, source) {
   loadConfigurationsTable()
   const canonical = aliasToCanonical[name] ?? name
   const entry = configurationsTable[canonical]
-  const parsed = entry.parser(value, canonical, source, reportInvalid)
-  return parsed !== undefined && entry.transformer
-    ? entry.transformer(parsed, canonical, source, reportInvalid)
-    : parsed
+  const parsed = entry.parser(value, canonical, source)
+  return parsed !== undefined && entry.transformer ? entry.transformer(parsed, canonical, source) : parsed
 }
 
 /**
@@ -292,6 +293,7 @@ function getValueFromEnvSources (name, skipDefault) {
 }
 
 module.exports = {
+  getEnvNameFromSource,
   getValueFromEnvSources,
   isSupportedConfiguration,
 
@@ -374,34 +376,6 @@ module.exports = {
       if (source !== undefined) {
         const fromSource = getEnvNameFromSource(name, source)
         if (fromSource !== undefined) {
-          return fromSource
-        }
-      }
-    }
-  },
-
-  /**
-   * Returns the environment variable name from the highest-priority source whose value is valid.
-   *
-   * @param {string} name Environment variable name
-   */
-  getValidatedConfiguredEnvName (name) {
-    validateAccess(name)
-
-    if (!stableConfigLoaded) {
-      loadStableConfig()
-    }
-
-    const sources = [
-      [fleetStableConfig, 'fleet_stable_config'],
-      [process.env, 'env_var'],
-      [localStableConfig, 'local_stable_config'],
-    ]
-    for (const [source, sourceName] of sources) {
-      if (source !== undefined) {
-        const fromSource = getEnvNameFromSource(name, source)
-        if (fromSource !== undefined &&
-          parseConfigurationValue(fromSource, source[fromSource], sourceName, false) !== undefined) {
           return fromSource
         }
       }

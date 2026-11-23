@@ -25,13 +25,14 @@ const {
   getIsGCPFunction,
   getIsAzureFunction,
 } = require('../serverless')
-const { ORIGIN_KEY, DATADOG_MINI_AGENT_PATH } = require('../constants')
+const { ORIGIN_KEY, DATADOG_MINI_AGENT_PATH, OTEL_B3_STYLE } = require('../constants')
 const { usesOtlpTraceExporter } = require('../exporter')
 const { appendRules } = require('../payload-tagging/config')
 const { createSiteUrl } = require('../exporters/common/url')
 const { getUnsupportedRuntime } = require('../debugger/unsupported-runtime')
 const ConfigBase = require('./config-base')
 const {
+  getEnvNameFromSource,
   getEnvironmentVariable,
   getEnvironmentVariables,
   getStableConfigSources,
@@ -55,6 +56,9 @@ const rfdc = createRfdc({
   circles: false,
   constructorHandlers: [[RegExp, transformers.toCamelCase]],
 })
+
+// eslint-disable-next-line eslint-rules/eslint-env-aliases
+const OTEL_PROPAGATORS = 'OTEL_PROPAGATORS'
 
 const TEST_OPTIMIZATION_WORKER_EXPORTERS = new Set([
   exporters.CUCUMBER_WORKER,
@@ -251,9 +255,9 @@ class Config extends ConfigBase {
 
     this.#applyDefaults()
     // TODO: Update origin documentation to list all valid sources. Add local_stable_config and fleet_stable_config.
-    this.#applyEnvs(getEnvironmentVariables(this.stableConfig.localEntries, true), 'local_stable_config')
-    this.#applyEnvs(getEnvironmentVariables(undefined, true), 'env_var')
-    this.#applyEnvs(getEnvironmentVariables(this.stableConfig.fleetEntries, true), 'fleet_stable_config')
+    this.#applyEnvs(this.stableConfig.localEntries, 'local_stable_config')
+    this.#applyEnvs(undefined, 'env_var')
+    this.#applyEnvs(this.stableConfig.fleetEntries, 'fleet_stable_config')
 
     // Experimental options are applied first, so they can be overridden by non-experimental options.
     // TODO: When using programmatic options, check if there is a higher
@@ -278,14 +282,21 @@ class Config extends ConfigBase {
   }
 
   /**
-   * @param {import('./helper').TracerEnv} envs
+   * @param {typeof process.env | undefined} envs
    * @param {'env_var' | 'local_stable_config' | 'fleet_stable_config' | 'remote_config'} source
    */
   #applyEnvs (envs, source) {
-    for (const [name, value] of Object.entries(envs)) {
+    for (const [name, value] of Object.entries(getEnvironmentVariables(envs, true))) {
       const entry = configurationsTable[name]
       const parsed = entry.parser(value, name, source)
       const transformed = parsed !== undefined && entry.transformer ? entry.transformer(parsed, name, source) : parsed
+      if (DD_MAJOR < 6 && name === 'DD_TRACE_PROPAGATION_STYLE' && transformed !== undefined &&
+          getEnvNameFromSource(name, envs) === OTEL_PROPAGATORS) {
+        const styles = /** @type {string[]} */ (transformed)
+        for (let index = 0; index < styles.length; index++) {
+          if (styles[index] === 'b3') styles[index] = OTEL_B3_STYLE
+        }
+      }
       const rawValue = transformed !== null && typeof transformed === 'object' ? value : parsed
       setAndTrack(this, entry.property ?? name, transformed, rawValue, source)
     }
@@ -361,8 +372,7 @@ class Config extends ConfigBase {
     // Special case: if options is null, nothing to apply
     // This happens when all remote configs are removed
     if (options !== null) {
-      // Resolve aliases and drop configs this tracer version doesn't recognize
-      this.#applyEnvs(getEnvironmentVariables(options, true), 'remote_config')
+      this.#applyEnvs(options, 'remote_config')
     }
 
     this.#applyCalculated()
@@ -483,24 +493,6 @@ class Config extends ConfigBase {
       setAndTrack(this, 'stats.DD_TRACE_STATS_COMPUTATION_ENABLED', false)
     } else if (!trackedConfigOrigins.has('stats.DD_TRACE_STATS_COMPUTATION_ENABLED')) {
       setAndTrack(this, 'stats.DD_TRACE_STATS_COMPUTATION_ENABLED', getIsGCPFunction() || getIsAzureFunction())
-    }
-
-    // TODO: Remove the experimental env vars as a major or deprecate the option?
-    if (this.experimental?.b3) {
-      if (!this.tracePropagationStyle.inject.includes('b3')) {
-        this.tracePropagationStyle.inject.push('b3')
-      }
-      if (!this.tracePropagationStyle.extract.includes('b3')) {
-        this.tracePropagationStyle.extract.push('b3')
-      }
-      if (!this.tracePropagationStyle.inject.includes('b3 single header')) {
-        this.tracePropagationStyle.inject.push('b3 single header')
-      }
-      if (!this.tracePropagationStyle.extract.includes('b3 single header')) {
-        this.tracePropagationStyle.extract.push('b3 single header')
-      }
-      setAndTrack(this, 'tracePropagationStyle.inject', this.tracePropagationStyle.inject)
-      setAndTrack(this, 'tracePropagationStyle.extract', this.tracePropagationStyle.extract)
     }
 
     if (IS_AWS_LAMBDA && !fs.existsSync(DATADOG_MINI_AGENT_PATH)) {
@@ -717,6 +709,22 @@ class Config extends ConfigBase {
     for (const [configName, alias] of fallbackConfigurations) {
       if (!trackedConfigOrigins.has(configName) && trackedConfigOrigins.has(alias)) {
         setAndTrack(this, configName, this[alias])
+      }
+    }
+
+    if (this.experimental?.b3) {
+      for (const direction of /** @type {const} */ (['inject', 'extract'])) {
+        const path = `tracePropagationStyle.${direction}`
+        const resolved = this.tracePropagationStyle[direction]
+        const otelB3 = resolved.includes(OTEL_B3_STYLE)
+        if (otelB3 ? resolved.includes('b3multi') : trackedConfigOrigins.get(path) === 'calculated') continue
+
+        const styles = [...resolved]
+        if (!styles.includes('b3')) styles.push('b3')
+        if (!otelB3 && !styles.includes('b3 single header')) {
+          styles.push('b3 single header')
+        }
+        setAndTrack(this, path, styles)
       }
     }
 
@@ -947,8 +955,7 @@ function warnWrongOtelSettings () {
   for (const [otelEnvVar, ddEnvVars, key = otelEnvVar] of /** @type {Array<[string, string[], string?]>} */ ([
     // eslint-disable-next-line eslint-rules/eslint-env-aliases
     ['OTEL_LOG_LEVEL', ['DD_TRACE_LOG_LEVEL'], 'logLevel'],
-    // eslint-disable-next-line eslint-rules/eslint-env-aliases
-    ['OTEL_PROPAGATORS', ['DD_TRACE_PROPAGATION_STYLE'], 'DD_TRACE_PROPAGATION_STYLE'],
+    [OTEL_PROPAGATORS, ['DD_TRACE_PROPAGATION_STYLE'], 'DD_TRACE_PROPAGATION_STYLE'],
     // eslint-disable-next-line eslint-rules/eslint-env-aliases
     ['OTEL_SERVICE_NAME', ['DD_SERVICE'], 'service'],
     ['OTEL_TRACES_SAMPLER', ['DD_TRACE_SAMPLE_RATE']],

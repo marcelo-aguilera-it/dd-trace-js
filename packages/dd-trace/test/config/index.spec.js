@@ -683,8 +683,8 @@ describe('Config', () => {
         baz: 'qux1',
       },
       tracePropagationStyle: {
-        inject: ['b3', 'datadog'],
-        extract: ['b3', 'datadog'],
+        inject: [DD_MAJOR < 6 ? 'OTel b3' : 'b3', 'datadog'],
+        extract: [DD_MAJOR < 6 ? 'OTel b3' : 'b3', 'datadog'],
       },
     })
 
@@ -6573,11 +6573,49 @@ rules:
   })
 
   describe('setRemoteConfig', () => {
+    it('should report the configured OTel B3 style at startup and after remote config withdrawal', () => {
+      process.env.OTEL_PROPAGATORS = 'b3,tracecontext'
+      const config = getConfig(undefined, { ddMajor: 5 })
+      const entries = [
+        { name: 'DD_TRACE_PROPAGATION_STYLE', value: 'b3,tracecontext', origin: 'env_var' },
+        { name: 'DD_TRACE_PROPAGATION_STYLE_INJECT', value: 'b3,tracecontext', origin: 'calculated' },
+        { name: 'DD_TRACE_PROPAGATION_STYLE_EXTRACT', value: 'b3,tracecontext', origin: 'calculated' },
+      ]
+      const reportedStyles = () => entries.map(({ name, origin }) =>
+        updateConfig.lastCall.args[0].find(entry => entry.name === name && entry.origin === origin)
+      )
+      assertObjectContains(reportedStyles(), entries)
+
+      config.setRemoteConfig({ DD_TRACE_PROPAGATION_STYLE: 'b3' })
+      config.setRemoteConfig(null)
+      assertObjectContains(reportedStyles(), entries)
+
+      config.setRemoteConfig({ DD_TRACE_EXPERIMENTAL_B3_ENABLED: 'true' })
+      const bothFormats = 'b3 single header,tracecontext,b3'
+      assertObjectContains(reportedStyles(), [
+        entries[0],
+        { ...entries[1], value: bothFormats },
+        { ...entries[2], value: bothFormats },
+      ])
+    })
+
+    it('should not look for internal propagation styles in programmatic arrays', () => {
+      const includes = sinon.spy(Array.prototype.includes)
+      const spanSamplingRules = [{ service: 'mysql', sampleRate: 0.5 }]
+      const inject = ['b3']
+      Object.defineProperty(spanSamplingRules, 'includes', { value: includes })
+      Object.defineProperty(inject, 'includes', { value: includes })
+
+      getConfig({ spanSamplingRules, tracePropagationStyle: { inject } }, { ddMajor: 5 })
+
+      sinon.assert.notCalled(includes)
+    })
+
     it('should preserve remote configuration that overrides a calculated fallback', () => {
       process.env.OTEL_PROPAGATORS = 'b3'
       const config = getConfig(undefined, { ddMajor: 5 })
 
-      assert.deepStrictEqual(config.tracePropagationStyle.inject, ['b3'])
+      assert.deepStrictEqual(config.tracePropagationStyle.inject, ['OTel b3'])
       assert.strictEqual(config.getOrigin('tracePropagationStyle.inject'), 'calculated')
 
       config.setRemoteConfig({ DD_TRACE_PROPAGATION_STYLE_INJECT: 'b3' })
@@ -6587,7 +6625,7 @@ rules:
 
       config.setRemoteConfig(null)
 
-      assert.deepStrictEqual(config.tracePropagationStyle.inject, ['b3'])
+      assert.deepStrictEqual(config.tracePropagationStyle.inject, ['OTel b3'])
       assert.strictEqual(config.getOrigin('tracePropagationStyle.inject'), 'calculated')
     })
 

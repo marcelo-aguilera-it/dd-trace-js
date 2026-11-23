@@ -114,26 +114,23 @@ const transformers = {
    * @param {string[]} value
    * @param {string} optionName
    * @param {string} source
-   * @param {boolean} [reportInvalid]
    * @returns {'none' | 'otlp' | undefined}
    */
-  parseOtelExporterList (value, optionName, source, reportInvalid = true) {
+  parseOtelExporterList (value, optionName, source) {
     const entries = transformers.toLowerCase(value)
 
     if (entries.includes('none')) {
       if (entries.every(entry => entry === 'none')) {
         return 'none'
       }
-      if (reportInvalid) {
-        warnInvalidValue(entries.join(','), optionName, source, "'none' cannot be combined with other exporters")
-      }
+      warnInvalidValue(entries.join(','), optionName, source, "'none' cannot be combined with other exporters")
       return
     }
 
     const exporter = entries.includes('otlp') ? 'otlp' : undefined
 
     const ignored = entries.filter(entry => entry !== 'otlp')
-    if (ignored.length > 0 && reportInvalid) {
+    if (ignored.length > 0) {
       const outcome = exporter === undefined ? 'picked default' : null
       warnInvalidValue(ignored.join(','), optionName, source, 'Unsupported exporters ignored', undefined, outcome)
     }
@@ -262,12 +259,12 @@ const transformers = {
     if (url?.protocol === 'http:' || url?.protocol === 'https:') return value
     warnInvalidValue(value, optionName, source, 'Invalid HTTP URL')
   },
-  validatePropagationStyles (value, optionName, _source, reportInvalid = true) {
+  validatePropagationStyles (value, optionName) {
     value = transformers.toLowerCase(value)
     for (let index = 0; index < value.length; index++) {
       const propagator = value[index]
       if (!VALID_PROPAGATION_STYLES.has(propagator)) {
-        if (reportInvalid) warnInvalidValue(propagator, optionName, optionName, 'Invalid propagator')
+        warnInvalidValue(propagator, optionName, optionName, 'Invalid propagator')
         return
       }
       if (DD_MAJOR >= 6 && propagator === 'b3 single header') {

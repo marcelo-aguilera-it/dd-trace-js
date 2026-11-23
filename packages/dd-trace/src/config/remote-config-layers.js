@@ -1,7 +1,5 @@
 'use strict'
 
-const { getEnvironmentVariables } = require('./helper')
-
 /**
  * @typedef {ReturnType<import('./index')>} Config
  * @typedef {'APM_TRACING' | 'APM_PROFILING'} Product
@@ -13,8 +11,8 @@ const layersByConfig = new WeakMap()
 
 /**
  * Replace a product's settings and apply the settings of every active product. For a setting
- * both products supply, APM_PROFILING takes precedence over the broader APM_TRACING, whatever the
- * order of updates.
+ * both products supply, APM_PROFILING takes precedence over the broader APM_TRACING by supplying
+ * canonical keys. Alias resolution in Config gives those keys priority regardless of update order.
  *
  * @param {Config} config
  * @param {Product} product
@@ -33,6 +31,5 @@ module.exports = function applyRemoteConfig (config, product, settings) {
     config.setRemoteConfig(tracing ?? profiling)
     return
   }
-  // Resolve aliases first, so that each setting has a single key across products.
-  config.setRemoteConfig({ ...getEnvironmentVariables(tracing, true), ...getEnvironmentVariables(profiling, true) })
+  config.setRemoteConfig({ ...tracing, ...profiling })
 }

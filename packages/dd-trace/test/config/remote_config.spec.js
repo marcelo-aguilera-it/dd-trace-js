@@ -1,10 +1,16 @@
 'use strict'
 
+const assert = require('node:assert/strict')
+
 const { describe, it, beforeEach } = require('mocha')
 const sinon = require('sinon')
 
+const { DD_MAJOR } = require('../../../../version')
 const RemoteConfigCapabilities = require('../../src/remote_config/capabilities')
 const { enable } = require('../../src/config/remote_config')
+const { enable: enableProfiling } = require('../../src/profiling/remote-config')
+const TextMapPropagator = require('../../src/opentracing/propagation/text_map')
+const { getConfigFresh } = require('../helpers/config')
 
 require('../setup/core')
 
@@ -71,6 +77,37 @@ describe('Tracing Remote Config', () => {
     })
 
     describe('SDK_CONFIGURATION handler', () => {
+      it('should preserve the v5 OTel B3 format while profiling is configured remotely', function () {
+        if (DD_MAJOR >= 6) this.skip()
+
+        config = getConfigFresh()
+        enable(rc, config, onConfigUpdated)
+        enableProfiling(rc, config, () => [])
+        const applyTracing = batchHandlers.get('APM_TRACING')
+        const applyProfiling = batchHandlers.get('APM_PROFILING')
+        const propagator = new TextMapPropagator(config)
+        const carrier = {
+          b3: '0000000000000123-0000000000000456-1',
+          'x-b3-traceid': '0000000000000789',
+          'x-b3-spanid': '0000000000000456',
+          'x-b3-sampled': '1',
+        }
+        applyTracing(createTransaction([{
+          id: 'tracing',
+          file: { sdk_config: sdkConfigPayload({ OTEL_PROPAGATORS: 'b3', DD_PROFILING_HEAP_ENABLED: 'false' }) },
+        }]))
+        assert.strictEqual(propagator.extract(carrier).toTraceId(), '291')
+
+        const profiling = { id: 'profiling', product: 'APM_PROFILING', file: { profilers: { heapSize: true } } }
+        applyProfiling(createTransaction([profiling]))
+        assert.strictEqual(config.DD_PROFILING_HEAP_ENABLED, true)
+        assert.strictEqual(propagator.extract(carrier).toTraceId(), '291')
+
+        applyProfiling(createTransaction([], [], [profiling]))
+        assert.strictEqual(config.DD_PROFILING_HEAP_ENABLED, false)
+        assert.strictEqual(propagator.extract(carrier).toTraceId(), '291')
+      })
+
       it('should configure tracer on apply action', () => {
         enable(rc, config, onConfigUpdated)
 
