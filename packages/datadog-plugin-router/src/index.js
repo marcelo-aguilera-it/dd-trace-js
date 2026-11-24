@@ -12,8 +12,13 @@ class RouterPlugin extends WebPlugin {
 
   #contexts = new WeakMap()
 
-  constructor (...args) {
-    super(...args)
+  /**
+   * @param {object} tracer
+   * @param {import('../../dd-trace/src/config/config-base')} tracerConfig
+   * @param {typeof web.setRoute} [writeRoute]
+   */
+  constructor (tracer, tracerConfig, writeRoute = web.setRoute) {
+    super(tracer, tracerConfig)
 
     this.addSub(`apm:${this.constructor.id}:middleware:enter`, ({ req, name, route }) => {
       // One ALS hop covers both the parent-span fallback (when no
@@ -42,7 +47,7 @@ class RouterPlugin extends WebPlugin {
       this.enter(span, store)
 
       web.patch(req)
-      web.setRoute(req, context.route)
+      writeRoute(req, context.route)
     })
 
     this.addSub(`apm:${this.constructor.id}:middleware:next`, ({ req }) => {

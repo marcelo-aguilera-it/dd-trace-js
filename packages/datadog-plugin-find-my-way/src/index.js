@@ -1,6 +1,7 @@
 'use strict'
 
 const Plugin = require('../../dd-trace/src/plugins/plugin')
+const { normalizeRouteSegment } = require('../../dd-trace/src/http-resource')
 const web = require('../../dd-trace/src/plugins/util/web')
 
 class FindMyWayPlugin extends Plugin {
@@ -21,7 +22,14 @@ class FindMyWayPlugin extends Plugin {
  * @param {import('../../dd-trace/src/http-resource').SamplingRouteHint} route
  */
 function readSamplingRoute (req, displayedRoute, route) {
-  return route === displayedRoute ? displayedRoute : undefined
+  const publishedRoute = /** @type {string} */ (route)
+  if (publishedRoute === displayedRoute) {
+    return displayedRoute
+  }
+  if (normalizeRouteSegment(publishedRoute) === displayedRoute &&
+    !web.getContext(req)?.config?.DD_TRACE_OTEL_SEMANTICS_ENABLED) {
+    return displayedRoute
+  }
 }
 
 module.exports = FindMyWayPlugin

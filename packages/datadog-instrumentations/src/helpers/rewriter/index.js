@@ -186,6 +186,7 @@ function getMatcher (moduleType) {
  */
 function createMatcher (dcModule) {
   const { create } = require('../../../../../vendor/dist/@apm-js-collab/code-transformer')
+  const { publishRestifyRoute } = require('./transforms/restify')
   const {
     awaitContextCallback,
     configureGraphqlFastPath,
@@ -213,6 +214,7 @@ function createMatcher (dcModule) {
 
   matcher.addTransform('awaitContextCallback', awaitContextCallback)
   matcher.addTransform('waitForAsyncEnd', waitForAsyncEnd)
+  matcher.addTransform('publishRestifyRoute', publishRestifyRoute)
   matcher.addTransform('configureGraphqlFastPath', configureGraphqlFastPath)
   matcher.addTransform('configureGraphqlJitCompileObject', configureGraphqlJitCompileObject)
   matcher.addTransform('configureGraphqlJitDeferredField', configureGraphqlJitDeferredField)

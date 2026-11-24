@@ -62,6 +62,7 @@ const registry = [
   },
   { instrumentations: require('./instrumentations/playwright') },
   { activate: true, instrumentations: require('./instrumentations/postgres') },
+  { instrumentations: require('./instrumentations/restify') },
   {
     activate: /** @type {ActivationConfig} */ ({ setup: () => require('../../react-router') }),
     instrumentations: require('./instrumentations/react-router'),
