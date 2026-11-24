@@ -1,6 +1,7 @@
 'use strict'
 
 const assert = require('node:assert/strict')
+const { promisify } = require('node:util')
 
 const { afterEach, beforeEach, describe, it } = require('mocha')
 
@@ -10,6 +11,19 @@ const externals = require('../../dd-trace/test/plugins/externals')
 const { resolvePluginVersions } = require('../../dd-trace/test/plugins/versions')
 const { withVersions } = require('../../dd-trace/test/setup/mocha')
 const httpRequest = require('../../dd-trace/test/setup/helpers/http-client')
+
+/**
+ * @param {{
+ *   listen: (options: { host: string, port: number }, callback: (error: Error | null) => void) => void,
+ *   server: import('node:http').Server
+ * }} app
+ */
+async function listenOnLoopback (app) {
+  const listen = promisify(app.listen.bind(app))
+  await listen({ host: '127.0.0.1', port: 0 })
+  const { port } = /** @type {import('node:net').AddressInfo} */ (app.server.address())
+  return 'http://127.0.0.1:' + port
+}
 
 /**
  * @param {string} address
@@ -48,23 +62,41 @@ describe('Fastify resource sampling', () => {
         done()
       })
       app.get('/items/:id', (req, reply) => reply.send({ priority: carrier['x-datadog-sampling-priority'] }))
-      await new Promise((resolve, reject) => {
-        app.listen({ host: '127.0.0.1', port: 0 }, error => error ? reject(error) : resolve())
-      })
+      const address = await listenOnLoopback(app)
 
       await Promise.all([
-        assertPropagatedPriority('http://127.0.0.1:' + app.server.address().port, 2),
+        assertPropagatedPriority(address, 2),
         agent.assertFirstTraceSpan({ resource: 'GET /items/:id', metrics: { _sampling_priority_v1: 2 } }),
       ])
     })
-
-    it('keeps native dispatch working without an HTTP server span', async () => {
-      app.get('/items/:id', (req, reply) => reply.send(req.params))
-      const response = await app.inject({ method: 'GET', url: '/items/42' })
-      assert.strictEqual(response.statusCode, 200)
-      assert.deepStrictEqual(JSON.parse(response.payload), { id: '42' })
-    })
   })
+
+  for (const rewriteUrl of [undefined, () => '/items/42']) {
+    withVersions('fastify', 'fastify', rewriteUrl ? '>=3' : '*', version => {
+      const title = rewriteUrl
+        ? 'dispatches a rewritten URL without an HTTP server span'
+        : 'dispatches without an HTTP server span'
+
+      it(title, async () => {
+        const tracer = await agent.load(['fastify', 'find-my-way', 'http'], [{}, {}, { client: false, server: false }])
+        const fastify = require('../../../versions/fastify@' + version).get()
+        const app = fastify(rewriteUrl ? { rewriteUrl } : undefined)
+        try {
+          app.get('/items/:id', (request, reply) => {
+            assert.strictEqual(tracer.scope().active(), null)
+            return reply.send(request.params)
+          })
+          const address = await listenOnLoopback(app)
+          const { status, data } = await httpRequest.get(address + (rewriteUrl ? '/before-rewrite' : '/items/42'))
+          assert.strictEqual(status, 200)
+          assert.deepStrictEqual(data, { id: '42' })
+        } finally {
+          await app.close()
+          await agent.close()
+        }
+      })
+    })
+  }
 
   withVersions('fastify', 'fastify', '>=3', version => {
     it('does not use the bare HTTP fallback before rewriteUrl runs', async () => {
@@ -88,17 +120,13 @@ describe('Fastify resource sampling', () => {
 
       const priority = createConfig().DD_TRACE_OTEL_SEMANTICS_ENABLED ? 2 : -1
       try {
-        await new Promise((resolve, reject) => {
-          fastify.listen({ host: '127.0.0.1', port: 0 }, error => error ? reject(error) : resolve())
-        })
+        const address = await listenOnLoopback(fastify)
         await Promise.all([
-          assertPropagatedPriority('http://127.0.0.1:' + fastify.server.address().port, priority),
+          assertPropagatedPriority(address, priority),
           priority === 2
             ? agent.assertFirstTraceSpan({ resource: 'GET /rewritten/:id', metrics: { _sampling_priority_v1: 2 } })
             : agent.assertUserRejectedTrace('GET /rewritten/:id'),
         ])
-        const injected = await fastify.inject({ method: 'GET', url: '/items/42' })
-        assert.strictEqual(injected.statusCode, 200)
       } finally {
         await fastify.close()
         await agent.close()
