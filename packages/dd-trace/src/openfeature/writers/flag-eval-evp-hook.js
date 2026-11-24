@@ -21,7 +21,8 @@ class FlagEvalEVPHook {
    * The provider only constructs this hook when evaluation counts are enabled.
    *
    * @param {import('../../config/config-base')} config
-   * @param {import('@datadog/openfeature-node-server').DependencyTelemetrySidecar} dependencyTelemetrySidecar
+   * @param {import('../../../../../vendor/dist/@datadog/openfeature-node-server').DependencyTelemetrySidecar}
+   * dependencyTelemetrySidecar
    */
   constructor (config, dependencyTelemetrySidecar) {
     const writer = new FlagEvaluationsWriter(config)
