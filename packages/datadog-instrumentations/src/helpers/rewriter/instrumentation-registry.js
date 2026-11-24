@@ -41,6 +41,7 @@ const registry = [
   { instrumentations: require('./instrumentations/fastify') },
   { instrumentations: require('./instrumentations/graphql') },
   { instrumentations: require('./instrumentations/graphql-jit') },
+  { instrumentations: require('./instrumentations/hapi') },
   { instrumentations: require('./instrumentations/jest') },
   { activate: true, instrumentations: require('./instrumentations/langchain') },
   { activate: true, instrumentations: require('./instrumentations/langgraph') },

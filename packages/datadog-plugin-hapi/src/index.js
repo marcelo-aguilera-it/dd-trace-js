@@ -24,6 +24,12 @@ class HapiPlugin extends RouterPlugin {
       web.setRoute(req, route)
     })
 
+    for (const name of ['hapi', '@hapi/hapi']) {
+      this.addSub(`tracing:orchestrion:${name}:routeLookup:end`, ({ req, route }) => {
+        web.setSamplingRoute(req, route)
+      })
+    }
+
     this.addSub('apm:hapi:request:error', error => {
       if (!error || !error.isBoom || !this.config.validateStatus(error.output.statusCode)) {
         this.addError(error)
