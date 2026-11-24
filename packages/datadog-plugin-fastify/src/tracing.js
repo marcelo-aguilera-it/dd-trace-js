@@ -1,6 +1,7 @@
 'use strict'
 
 const RouterPlugin = require('../../datadog-plugin-router/src')
+const web = require('../../dd-trace/src/plugins/util/web')
 const { storage } = require('../../datadog-core')
 
 class FastifyTracingPlugin extends RouterPlugin {
@@ -11,6 +12,10 @@ class FastifyTracingPlugin extends RouterPlugin {
 
     this.addSub('apm:fastify:request:handle', ({ req }) => {
       this.setFramework(req, 'fastify', this.config)
+    })
+
+    this.addSub('tracing:orchestrion:fastify:rewriteUrl:start', req => {
+      web.setSamplingRoute(req)
     })
 
     this.addBind('datadog:fastify:pre-parsing:start', getParentStore)

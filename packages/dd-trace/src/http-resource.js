@@ -14,10 +14,16 @@ const resourceSources = new WeakMap()
 
 /**
  * @typedef {import('./opentracing/span_context')} DatadogSpanContext
+ * @typedef {{ method: string }} HttpRequest
+ * @typedef {string | object | undefined} SamplingRouteHint
+ * @typedef {(req: HttpRequest, displayedRoute: string | undefined, hint: SamplingRouteHint) =>
+ *   string | false | undefined} SamplingRouteReader
+ * @typedef {string | false | SamplingRouteReader} SamplingRoute
  * @typedef {{
- *   req: { method: string },
+ *   req: HttpRequest,
  *   config: { DD_TRACE_OTEL_SEMANTICS_ENABLED?: boolean },
- *   samplingRoute: string | typeof UNROUTED_HTTP | undefined,
+ *   samplingRoute: SamplingRoute | typeof UNROUTED_HTTP | undefined,
+ *   samplingRouteHint?: SamplingRouteHint,
  *   generatedRoute?: string,
  *   paths: string[],
  * }} HttpResourceSource
@@ -31,6 +37,19 @@ const resourceSources = new WeakMap()
 function httpResourceName (method, route, otel) {
   if (otel) return otelHttpResourceName(method, route)
   return route ? method + ' ' + route : method
+}
+
+/** @param {string[]} paths */
+function joinRoute (paths) {
+  return paths.length > 1 ? paths.join('') : paths[0]
+}
+
+/**
+ * @template {string | RegExp} Route
+ * @param {Route | false | undefined} route
+ */
+function normalizeRouteSegment (route) {
+  return !route || route === '/' || route === '*' ? '' : route
 }
 
 /**
@@ -59,14 +78,31 @@ function getSamplingResource (context) {
   }
 
   const taggedRoute = context.getTag(HTTP_ROUTE)
-  const explicitRoute = typeof taggedRoute === 'string' && taggedRoute !== generatedRoute
-  const route = explicitRoute ? taggedRoute : samplingRoute
-  if (route === undefined || (route === UNROUTED_HTTP && paths.length !== 0)) return resource
-  if (!explicitRoute && typeof route === 'string' && paths.join('') !== route) return resource
+  let template
+  if (typeof taggedRoute === 'string' && taggedRoute !== generatedRoute) {
+    template = taggedRoute
+  } else if (samplingRoute === UNROUTED_HTTP) {
+    if (paths.length !== 0) return resource
+    template = ''
+  } else if (typeof samplingRoute === 'function') {
+    template = samplingRoute(req, joinRoute(paths), source.samplingRouteHint)
+  } else {
+    template = samplingRoute
+  }
+
+  if (template === undefined) return resource
+  if (template === false) return taggedRoute === undefined && !joinRoute(paths) ? resource : undefined
 
   const method = otel ? context.getTag(HTTP_METHOD) : undefined
-  const template = typeof route === 'string' ? route : undefined
   return httpResourceName(typeof method === 'string' ? method : req.method, template, otel)
 }
 
-module.exports = { UNROUTED_HTTP, getSamplingResource, httpResourceName, trackSamplingContext, untrackSamplingContext }
+module.exports = {
+  UNROUTED_HTTP,
+  getSamplingResource,
+  httpResourceName,
+  joinRoute,
+  normalizeRouteSegment,
+  trackSamplingContext,
+  untrackSamplingContext,
+}
