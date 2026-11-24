@@ -66,6 +66,46 @@ describe('Fastify resource sampling', () => {
     })
   })
 
+  withVersions('fastify', 'fastify', '>=3', version => {
+    it('does not use the bare HTTP fallback before rewriteUrl runs', async () => {
+      await agent.load(['fastify', 'find-my-way', 'http'], [{}, {}, { client: false }], {
+        sampleRate: 0,
+        rateLimit: -1,
+        samplingRules: [{ resource: 'GET', sampleRate: 1 }],
+      })
+      const tracer = require('../../dd-trace')
+      const createFastify = require('../../../versions/fastify@' + version).get()
+      const carrier = {}
+      const fastify = createFastify({
+        rewriteUrl () {
+          if (tracer.scope().active()) {
+            tracer.trace('outbound', span => tracer.inject(span, 'http_headers', carrier))
+          }
+          return '/rewritten/42'
+        },
+      })
+      fastify.get('/rewritten/:id', (req, reply) => reply.send({ priority: carrier['x-datadog-sampling-priority'] }))
+
+      const priority = createConfig().DD_TRACE_OTEL_SEMANTICS_ENABLED ? 2 : -1
+      try {
+        await new Promise((resolve, reject) => {
+          fastify.listen({ host: '127.0.0.1', port: 0 }, error => error ? reject(error) : resolve())
+        })
+        await Promise.all([
+          assertPropagatedPriority('http://127.0.0.1:' + fastify.server.address().port, priority),
+          priority === 2
+            ? agent.assertFirstTraceSpan({ resource: 'GET /rewritten/:id', metrics: { _sampling_priority_v1: 2 } })
+            : agent.assertUserRejectedTrace('GET /rewritten/:id'),
+        ])
+        const injected = await fastify.inject({ method: 'GET', url: '/items/42' })
+        assert.strictEqual(injected.statusCode, 200)
+      } finally {
+        await fastify.close()
+        await agent.close()
+      }
+    })
+  })
+
   const { unversioned: expressRange } = resolvePluginVersions({
     name: 'express',
     declarations: externals.fastify.filter(({ name }) => name === 'express'),
@@ -75,11 +115,15 @@ describe('Fastify resource sampling', () => {
   withVersions('fastify', 'fastify', '>=4', version => {
     if (!expressRange) return
 
-    it('does not use the outer route after delegation to Express', async () => {
+    /**
+     * @param {string | RegExp} resource
+     * @param {number} priority
+     */
+    async function assertDelegatedSampling (resource, priority) {
       await agent.load(['fastify', 'find-my-way', 'http', 'express', 'router'], [{}, {}, { client: false }], {
         sampleRate: 0,
         rateLimit: -1,
-        samplingRules: [{ resource: 'GET /items/:id', sampleRate: 1 }],
+        samplingRules: [{ resource, sampleRate: 1 }],
       })
       const tracer = require('../../dd-trace')
       const createExpress = require('../../../versions/express').get()
@@ -97,17 +141,27 @@ describe('Fastify resource sampling', () => {
         express(req.raw, reply.raw)
       })
 
-      const priority = createConfig().DD_TRACE_OTEL_SEMANTICS_ENABLED ? 2 : -1
       try {
         const address = await fastify.listen({ host: '127.0.0.1', port: 0 })
         await Promise.all([
           assertPropagatedPriority(address, priority),
-          agent.assertFirstTraceSpan({ resource: 'GET /items/:id', metrics: { _sampling_priority_v1: priority } }),
+          priority === 2
+            ? agent.assertFirstTraceSpan({ resource: 'GET /items/:id', metrics: { _sampling_priority_v1: 2 } })
+            : agent.assertUserRejectedTrace('GET /items/:id'),
         ])
       } finally {
         await fastify.close()
         await agent.close()
       }
+    }
+
+    it('uses the existing inner resource after delegation to Express', async () => {
+      const priority = createConfig().DD_TRACE_OTEL_SEMANTICS_ENABLED ? 2 : -1
+      await assertDelegatedSampling('GET /items/:id', priority)
+    })
+
+    it('does not match a rule for the superseded outer route', async () => {
+      await assertDelegatedSampling(/^GET \/\*$/, -1)
     })
   })
 })

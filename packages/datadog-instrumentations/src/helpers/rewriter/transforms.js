@@ -27,8 +27,25 @@ module.exports = {
   configureGraphqlFastPath,
   configureMercuriusRequest,
   publishDurableOrchestrationFailure,
+  publishFastifyRewrite,
   publishTrpcRequestInfo,
   waitForAsyncEnd,
+}
+
+/**
+ * @param {{ channelName: string, transforms: { tracingChannelDeclaration: Function } }} state
+ * @param {import('estree').VariableDeclaration} node
+ * @param {import('estree').BlockStatement} parent
+ * @param {import('estree').Node[]} ancestry
+ */
+function publishFastifyRewrite (state, node, parent, ancestry) {
+  state.transforms.tracingChannelDeclaration(state, ancestry.at(-1))
+  const channel = `tr_ch_apm$${state.channelName.replaceAll(/[^\w]/g, '_')}`
+  parent.body.splice(parent.body.indexOf(node), 0, ...parse(`
+    if (${channel}.start.hasSubscribers) {
+      ${channel}.start.publish(req)
+    }
+  `).body)
 }
 
 /**

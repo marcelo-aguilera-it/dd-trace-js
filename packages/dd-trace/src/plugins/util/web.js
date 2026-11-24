@@ -8,7 +8,13 @@ const tags = require('../../../../../ext/tags')
 const types = require('../../../../../ext/types')
 const kinds = require('../../../../../ext/kinds')
 const { ERROR_MESSAGE } = require('../../constants')
-const { UNROUTED_HTTP, httpResourceName, trackSamplingContext, untrackSamplingContext } = require('../../http-resource')
+const {
+  UNROUTED_HTTP,
+  httpResourceName,
+  joinRoute,
+  trackSamplingContext,
+  untrackSamplingContext,
+} = require('../../http-resource')
 const TracingPlugin = require('../tracing')
 const { storage } = require('../../../../datadog-core')
 const legacyStorage = storage('legacy')
@@ -150,10 +156,20 @@ const web = {
     }
   },
 
-  setRoute (req, path) {
+  /**
+   * @param {object} req
+   * @param {string} path
+   * @param {import('../../http-resource').SamplingRoute} [samplingRoute] - Native selection at this event.
+   */
+  setRoute (req, path, samplingRoute) {
     const context = contexts.get(req)
 
     if (!context?.span) return
+
+    if (samplingRoute !== undefined) {
+      context.samplingRoute = samplingRoute
+      context.samplingRouteHint = typeof samplingRoute === 'function' ? path : undefined
+    }
 
     if (!path || !context.config?.DD_TRACE_OTEL_SEMANTICS_ENABLED) {
       context.paths = [path]
@@ -162,7 +178,7 @@ const web = {
 
     const spanContext = context.span.context()
     const currentRoute = spanContext.getTag(HTTP_ROUTE)
-    const publishedRoute = context.paths.length > 1 ? context.paths.join('') : context.paths[0]
+    const publishedRoute = joinRoute(context.paths)
     context.paths = [path]
     // Publish before finish because downstream requests can trigger sampling inside the handler.
     // Replace only values this context owns, so an upstream route still wins.
@@ -179,11 +195,15 @@ const web = {
 
   /**
    * @param {object} req
-   * @param {string} route
+   * @param {import('../../http-resource').SamplingRoute} [route] - False while routing is pending.
+   * @param {import('../../http-resource').SamplingRouteHint} [hint] - Native data passed to a stable route reader.
    */
-  setSamplingRoute (req, route) {
+  setSamplingRoute (req, route = false, hint) {
     const context = contexts.get(req)
-    if (context?.span) context.samplingRoute = route
+    if (!context?.span) return
+
+    context.samplingRoute = route
+    context.samplingRouteHint = hint
   },
 
   // Remove the current route segment.
@@ -214,6 +234,7 @@ const web = {
       span: null,
       paths: [],
       samplingRoute: UNROUTED_HTTP,
+      samplingRouteHint: undefined,
       generatedRoute: undefined,
       middleware: [],
       beforeEnd: [],
@@ -360,6 +381,8 @@ const web = {
     context.config.hooks.request(context.span, req, res)
     addResourceTag(context)
     untrackSamplingContext(context.span.context())
+    context.samplingRoute = undefined
+    context.samplingRouteHint = undefined
 
     context.span.finish()
     context.finished = true
@@ -610,9 +633,7 @@ function applyRouteOrEndpointTag (context) {
   // again. http.route is terminal once set; nothing supersedes it.
   if (spanContext.hasTag(HTTP_ROUTE)) return
 
-  // Skip the `Array.prototype.join` builtin in the empty / single-segment
-  // cases; `paths[0]` covers both (`undefined` is falsy for the empty case).
-  const route = paths.length > 1 ? paths.join('') : paths[0]
+  const route = joinRoute(paths)
 
   if (route) {
     // A framework route supersedes any http.endpoint fallback a pre-finish
