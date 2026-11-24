@@ -8,6 +8,7 @@ const tags = require('../../../../../ext/tags')
 const types = require('../../../../../ext/types')
 const kinds = require('../../../../../ext/kinds')
 const { ERROR_MESSAGE } = require('../../constants')
+const { UNROUTED_HTTP, httpResourceName, trackSamplingContext, untrackSamplingContext } = require('../../http-resource')
 const TracingPlugin = require('../tracing')
 const { storage } = require('../../../../datadog-core')
 const legacyStorage = storage('legacy')
@@ -20,7 +21,6 @@ const {
   INSTRUMENTATION_HTTP_RESOURCE,
   isInstrumentationOwnedResource,
   NETWORK_PEER_ADDRESS,
-  otelHttpResourceName,
   setInstrumentationHttpResource,
 } = require('./http-otel-semantics')
 
@@ -98,6 +98,7 @@ const web = {
     span.context()._name = `${name}.request`
     span.context().setTag('component', name)
     span._integrationName = name
+    if (context.samplingRoute === UNROUTED_HTTP) context.samplingRoute = undefined
 
     web.setConfig(req, config)
   },
@@ -130,6 +131,7 @@ const web = {
       span = context.span
     } else {
       span = web.startServerlessSpanWithInferredProxy(tracer, config, name, req, traceCtx)
+      trackSamplingContext(span.context(), context)
     }
 
     context.tracer = tracer
@@ -167,11 +169,21 @@ const web = {
     let route = currentRoute
     if (currentRoute === undefined || currentRoute === publishedRoute) {
       route = path
+      context.generatedRoute = path
       context.span.setTag(HTTP_ROUTE, path)
     }
     if (ownsResource(spanContext)) {
-      setInstrumentationHttpResource(context.span, otelHttpResourceName(req.method, route))
+      setInstrumentationHttpResource(context.span, httpResourceName(req.method, route, true))
     }
+  },
+
+  /**
+   * @param {object} req
+   * @param {string} route
+   */
+  setSamplingRoute (req, route) {
+    const context = contexts.get(req)
+    if (context?.span) context.samplingRoute = route
   },
 
   // Remove the current route segment.
@@ -201,6 +213,8 @@ const web = {
       req,
       span: null,
       paths: [],
+      samplingRoute: UNROUTED_HTTP,
+      generatedRoute: undefined,
       middleware: [],
       beforeEnd: [],
       config: {},
@@ -345,6 +359,7 @@ const web = {
 
     context.config.hooks.request(context.span, req, res)
     addResourceTag(context)
+    untrackSamplingContext(context.span.context())
 
     context.span.finish()
     context.finished = true
@@ -541,7 +556,7 @@ function addRequestTags (context, spanType) {
   if (config.DD_TRACE_OTEL_SEMANTICS_ENABLED) {
     // Claim the resource before propagation can sample it.
     if (ownsResource(spanContext)) {
-      setInstrumentationHttpResource(span, otelHttpResourceName(req.method))
+      setInstrumentationHttpResource(span, httpResourceName(req.method, undefined, true))
     }
     const peerAddress = req.socket?.remoteAddress
     if (peerAddress) span.setTag(NETWORK_PEER_ADDRESS, peerAddress)
@@ -603,6 +618,7 @@ function applyRouteOrEndpointTag (context) {
     // A framework route supersedes any http.endpoint fallback a pre-finish
     // call stamped before the route resolved; it must not be gated on
     // HTTP_ENDPOINT.
+    context.generatedRoute = route
     span.setTag(HTTP_ROUTE, route)
     return
   }
@@ -633,18 +649,14 @@ function addResourceTag (context) {
   if (!config.DD_TRACE_OTEL_SEMANTICS_ENABLED) {
     if (currentResource) return
 
-    let resource = req.method
-    const route = spanContext.getTag(HTTP_ROUTE)
-
-    if (route) resource += ` ${route}`
-    span.setTag(RESOURCE_NAME, resource)
+    span.setTag(RESOURCE_NAME, httpResourceName(req.method, spanContext.getTag(HTTP_ROUTE)))
     return
   }
 
   const instrumentationResource = spanContext.getTag(INSTRUMENTATION_HTTP_RESOURCE)
   if (currentResource && !isInstrumentationOwnedResource(currentResource, instrumentationResource)) return
 
-  const resource = otelHttpResourceName(req.method, spanContext.getTag(HTTP_ROUTE))
+  const resource = httpResourceName(req.method, spanContext.getTag(HTTP_ROUTE), true)
   if (currentResource === resource && instrumentationResource === resource) return
 
   setInstrumentationHttpResource(span, resource)

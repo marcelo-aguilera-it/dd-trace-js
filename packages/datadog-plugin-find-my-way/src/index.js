@@ -10,6 +10,7 @@ class FindMyWayPlugin extends Plugin {
     super(...args)
 
     this.addSub('apm:find-my-way:request:route', ({ req, route }) => {
+      web.setSamplingRoute(req, route)
       web.setRoute(req, route)
     })
   }
