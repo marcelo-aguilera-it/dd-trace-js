@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const { Readable } = require('node:stream')
 
 const { after, afterEach, before, beforeEach, describe, it } = require('mocha')
 const proxyquire = require('proxyquire')
@@ -21,8 +22,12 @@ const {
   queryParser,
   nextBodyParsed,
   nextQueryParsed,
+  nextResponseBody,
+  nextJsonResponse,
+  nextAppRouteResponse,
   expressProcessParams,
   routerParam,
+  routerRouteCreate,
   responseBody,
   responseWriteHead,
   responseSetHeader,
@@ -234,6 +239,7 @@ describe('AppSec Index', function () {
       assert.strictEqual(nextQueryParsed.hasSubscribers, false)
       assert.strictEqual(expressProcessParams.hasSubscribers, false)
       assert.strictEqual(routerParam.hasSubscribers, false)
+      assert.strictEqual(routerRouteCreate.hasSubscribers, false)
       assert.strictEqual(responseWriteHead.hasSubscribers, false)
       assert.strictEqual(responseSetHeader.hasSubscribers, false)
       assert.strictEqual(informationalResponse.hasSubscribers, false)
@@ -250,6 +256,7 @@ describe('AppSec Index', function () {
       assert.strictEqual(nextQueryParsed.hasSubscribers, true)
       assert.strictEqual(expressProcessParams.hasSubscribers, true)
       assert.strictEqual(routerParam.hasSubscribers, true)
+      assert.strictEqual(routerRouteCreate.hasSubscribers, true)
       assert.strictEqual(responseWriteHead.hasSubscribers, true)
       assert.strictEqual(responseSetHeader.hasSubscribers, true)
       assert.strictEqual(informationalResponse.hasSubscribers, true)
@@ -334,6 +341,7 @@ describe('AppSec Index', function () {
       assert.strictEqual(nextQueryParsed.hasSubscribers, false)
       assert.strictEqual(expressProcessParams.hasSubscribers, false)
       assert.strictEqual(routerParam.hasSubscribers, false)
+      assert.strictEqual(routerRouteCreate.hasSubscribers, false)
       assert.strictEqual(responseWriteHead.hasSubscribers, false)
       assert.strictEqual(responseSetHeader.hasSubscribers, false)
       assert.strictEqual(informationalResponse.hasSubscribers, false)
@@ -961,6 +969,121 @@ describe('AppSec Index', function () {
           [addresses.HTTP_INCOMING_RESPONSE_BODY]: body,
         }, req)
       })
+
+      for (const [framework, responseChannel] of [['Pages', nextResponseBody], ['App Router', nextJsonResponse]]) {
+        describe(`Next.js ${framework}`, () => {
+          const req = { method: 'GET' }
+          const res = { statusCode: 201 }
+          const statusCode = framework === 'App Router' ? 202 : undefined
+
+          /** @param {unknown} body */
+          function publishBody (body) {
+            if (statusCode) {
+              const response = new Response(JSON.stringify(body), { status: statusCode })
+              responseChannel.publish({ body, stream: response.body })
+              sinon.assert.notCalled(waf.run)
+              nextAppRouteResponse.publish({ arguments: [{ method: 'GET' }], result: response })
+            } else {
+              responseChannel.publish({ arguments: [body] })
+            }
+          }
+
+          beforeEach(() => {
+            req.method = 'GET'
+            apiSecurity.sampleRequest = apiSecurity.sampleRequest.instantiateFake(
+              () => apiSecurity.SamplingDecision.SAMPLE
+            )
+            web.getContext.withArgs(req).returns({ res })
+          })
+
+          for (const body of [{ value: 'café' }, [{ nested: 1 }]]) {
+            it(`sends the ${Array.isArray(body) ? 'array' : 'object'} body to the request's WAF context`, () => {
+              storage('legacy').run(withRequest({}, req), () => {
+                publishBody(body)
+              })
+
+              sinon.assert.calledOnceWithExactly(apiSecurity.sampleRequest, req,
+                statusCode ? { statusCode: 202 } : res)
+              sinon.assert.calledOnceWithExactly(waf.run, {
+                [addresses.HTTP_INCOMING_RESPONSE_BODY]: body,
+              }, req)
+            })
+          }
+
+          if (framework === 'App Router') {
+            it('analyzes only the returned JSON response', () => {
+              const discarded = new Response('{}', { status: statusCode })
+              const returned = new Response('{}', { status: statusCode })
+              responseChannel.publish({ body: { discarded: true }, stream: discarded.body })
+              responseChannel.publish({ body: { value: 'café' }, stream: returned.body })
+
+              storage('legacy').run(withRequest({}, req), () => {
+                nextAppRouteResponse.publish({ arguments: [], result: returned })
+              })
+
+              sinon.assert.calledOnceWithExactly(waf.run, {
+                [addresses.HTTP_INCOMING_RESPONSE_BODY]: { value: 'café' },
+              }, req)
+            })
+
+            it('does not analyze a response that was not created by the JSON factory', () => {
+              storage('legacy').run(withRequest({}, req), () => {
+                nextAppRouteResponse.publish({ arguments: [], result: new Response('{"value":1}') })
+              })
+              sinon.assert.notCalled(waf.run)
+              sinon.assert.notCalled(apiSecurity.sampleRequest)
+            })
+
+            it('does not analyze the handler arguments when the route resolves without a response', () => {
+              storage('legacy').run(withRequest({}, req), () => {
+                nextAppRouteResponse.publish({ arguments: [{ value: 'request' }], result: undefined })
+              })
+              sinon.assert.notCalled(waf.run)
+              sinon.assert.notCalled(apiSecurity.sampleRequest)
+            })
+
+            for (const error of [new Error('handler failed'), undefined]) {
+              it(`does not analyze a route rejected with ${String(error)}`, () => {
+                storage('legacy').run(withRequest({}, req), () => {
+                  nextAppRouteResponse.publish({ arguments: [new Request('http://localhost/')], error })
+                })
+                sinon.assert.notCalled(waf.run)
+                sinon.assert.notCalled(apiSecurity.sampleRequest)
+              })
+            }
+          }
+
+          it('does not analyze a body suppressed for a HEAD request', () => {
+            req.method = 'HEAD'
+            storage('legacy').run(withRequest({}, req), () => publishBody({ value: 'café' }))
+            sinon.assert.notCalled(waf.run)
+          })
+
+          it('does not analyze a response without an active request', () => {
+            storage('legacy').run({}, () => publishBody({}))
+            sinon.assert.notCalled(waf.run)
+          })
+
+          it('does not analyze an unsampled response', () => {
+            apiSecurity.sampleRequest = apiSecurity.sampleRequest.instantiateFake(
+              () => apiSecurity.SamplingDecision.SKIP
+            )
+            storage('legacy').run(withRequest({}, req), () => {
+              publishBody({})
+            })
+            sinon.assert.notCalled(waf.run)
+          })
+
+          for (const body of [undefined, null, 'text', 1, true, Buffer.from('bytes'), Readable.from(['bytes'])]) {
+            it(`ignores non-JSON-object payload ${String(body)}`, () => {
+              storage('legacy').run(withRequest({}, req), () => {
+                publishBody(body)
+              })
+              sinon.assert.notCalled(waf.run)
+            })
+          }
+        })
+      }
     })
   })
 
