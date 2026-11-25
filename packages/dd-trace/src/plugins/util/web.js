@@ -168,7 +168,7 @@ const web = {
 
     if (samplingRoute !== undefined) {
       context.samplingRoute = samplingRoute
-      context.samplingRouteHint = typeof samplingRoute === 'function' ? path : undefined
+      context.samplingRouteHint = path
     }
 
     if (!path || !context.config?.DD_TRACE_OTEL_SEMANTICS_ENABLED) {

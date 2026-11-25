@@ -9,6 +9,10 @@ class FindMyWayPlugin extends Plugin {
   constructor (...args) {
     super(...args)
 
+    this.addSub('tracing:orchestrion:find-my-way:lookup:start', req => {
+      web.setSamplingRoute(req)
+    })
+
     this.addSub('apm:find-my-way:request:route', ({ req, route }) => {
       web.setRoute(req, route, readSamplingRoute)
     })

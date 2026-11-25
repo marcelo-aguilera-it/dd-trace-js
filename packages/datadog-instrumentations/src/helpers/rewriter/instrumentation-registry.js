@@ -39,6 +39,7 @@ const registry = [
     instrumentations: require('./instrumentations/elevenlabs'),
   },
   { instrumentations: require('./instrumentations/fastify') },
+  { instrumentations: require('./instrumentations/find-my-way') },
   { instrumentations: require('./instrumentations/graphql') },
   { instrumentations: require('./instrumentations/graphql-jit') },
   { instrumentations: require('./instrumentations/jest') },

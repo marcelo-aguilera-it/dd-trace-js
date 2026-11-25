@@ -45,14 +45,6 @@ function joinRoute (paths) {
 }
 
 /**
- * @template {string | RegExp} Route
- * @param {Route | false | undefined} route
- */
-function normalizeRouteSegment (route) {
-  return !route || route === '/' || route === '*' ? '' : route
-}
-
-/**
  * @param {DatadogSpanContext} context
  * @param {HttpResourceSource} requestContext
  */
@@ -102,7 +94,6 @@ module.exports = {
   getSamplingResource,
   httpResourceName,
   joinRoute,
-  normalizeRouteSegment,
   trackSamplingContext,
   untrackSamplingContext,
 }

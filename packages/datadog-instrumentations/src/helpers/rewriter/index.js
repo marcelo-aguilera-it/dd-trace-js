@@ -195,7 +195,7 @@ function createMatcher (dcModule) {
     configureGraphqlJitRuntime,
     configureMercuriusRequest,
     publishDurableOrchestrationFailure,
-    publishFastifyRewrite,
+    publishRoutingStart,
     publishTrpcRequestInfo,
     waitForAsyncEnd,
   } = require('./transforms')
@@ -220,7 +220,7 @@ function createMatcher (dcModule) {
   matcher.addTransform('configureGraphqlJitRuntime', configureGraphqlJitRuntime)
   matcher.addTransform('configureMercuriusRequest', configureMercuriusRequest)
   matcher.addTransform('publishDurableOrchestrationFailure', publishDurableOrchestrationFailure)
-  matcher.addTransform('publishFastifyRewrite', publishFastifyRewrite)
+  matcher.addTransform('publishRoutingStart', publishRoutingStart)
   matcher.addTransform('postgresNativeCopy', postgresNativeCopy)
   matcher.addTransform('postgresNativePreparation', postgresNativePreparation)
   matcher.addTransform('postgresNativeTransactionEnd', postgresNativeTransactionEnd)
